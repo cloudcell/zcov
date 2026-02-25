@@ -1,0 +1,162 @@
+//! Unified coverage data model.
+//! All report generators consume this representation.
+
+const std = @import("std");
+
+pub const SourceLocation = struct {
+    /// Absolute path to the source file.
+    file: []const u8,
+    /// 1-based line number.
+    line: u32,
+    /// 1-based column (0 = unknown).
+    column: u32,
+};
+
+pub const LineCoverage = struct {
+    /// 1-based line number.
+    line: u32,
+    /// Number of times this line was executed (0 = not executed).
+    hit_count: u32,
+};
+
+pub const FunctionCoverage = struct {
+    /// Mangled function name as it appears in DWARF.
+    name: []const u8,
+    /// 1-based line number where the function starts.
+    start_line: u32,
+    /// Number of times the function was called (approximated from its first line).
+    hit_count: u32,
+};
+
+pub const FileCoverage = struct {
+    /// Absolute path to the source file.
+    path: []const u8,
+    /// Coverage per executed line (sorted by line number, only lines that
+    /// appear in DWARF are included).
+    lines: []LineCoverage,
+    /// Functions defined in this file.
+    functions: []FunctionCoverage,
+};
+
+pub const Summary = struct {
+    lines_found: u32,
+    lines_hit: u32,
+    functions_found: u32,
+    functions_hit: u32,
+
+    pub fn linePercent(s: Summary) f64 {
+        if (s.lines_found == 0) return 100.0;
+        return @as(f64, @floatFromInt(s.lines_hit)) / @as(f64, @floatFromInt(s.lines_found)) * 100.0;
+    }
+
+    pub fn functionPercent(s: Summary) f64 {
+        if (s.functions_found == 0) return 100.0;
+        return @as(f64, @floatFromInt(s.functions_hit)) / @as(f64, @floatFromInt(s.functions_found)) * 100.0;
+    }
+};
+
+pub const CoverageData = struct {
+    allocator: std.mem.Allocator,
+    files: []FileCoverage,
+    summary: Summary,
+
+    pub fn deinit(self: *CoverageData) void {
+        for (self.files) |fc| {
+            self.allocator.free(fc.lines);
+            for (fc.functions) |fn_cov| {
+                self.allocator.free(fn_cov.name);
+            }
+            self.allocator.free(fc.functions);
+        }
+        self.allocator.free(self.files);
+        self.* = undefined;
+    }
+};
+
+/// Builder accumulates per-file line hit counts, then produces CoverageData.
+pub const Builder = struct {
+    allocator: std.mem.Allocator,
+    /// file_path → (line → hit_count)
+    file_map: std.StringHashMap(std.AutoHashMap(u32, u32)),
+
+    pub fn init(allocator: std.mem.Allocator) Builder {
+        return .{
+            .allocator = allocator,
+            .file_map = std.StringHashMap(std.AutoHashMap(u32, u32)).init(allocator),
+        };
+    }
+
+    pub fn deinit(self: *Builder) void {
+        var it = self.file_map.iterator();
+        while (it.next()) |entry| {
+            entry.value_ptr.deinit();
+        }
+        self.file_map.deinit();
+    }
+
+    /// Record that `line` in `file_path` was hit.
+    pub fn recordHit(self: *Builder, file_path: []const u8, line: u32) !void {
+        const gop = try self.file_map.getOrPut(file_path);
+        if (!gop.found_existing) {
+            gop.value_ptr.* = std.AutoHashMap(u32, u32).init(self.allocator);
+        }
+        const count_gop = try gop.value_ptr.getOrPut(line);
+        if (!count_gop.found_existing) {
+            count_gop.value_ptr.* = 0;
+        }
+        count_gop.value_ptr.* += 1;
+    }
+
+    /// Produce the final CoverageData. Caller owns the result (call deinit).
+    /// `all_lines`: optional map of file_path → sorted list of all coverable line numbers.
+    /// When provided, lines not in `file_map` are included with hit_count = 0.
+    pub fn build(self: *Builder) !CoverageData {
+        var files: std.ArrayList(FileCoverage) = .empty;
+        errdefer files.deinit(self.allocator);
+
+        var summary = Summary{
+            .lines_found = 0,
+            .lines_hit = 0,
+            .functions_found = 0,
+            .functions_hit = 0,
+        };
+
+        var it = self.file_map.iterator();
+        while (it.next()) |file_entry| {
+            const path = file_entry.key_ptr.*;
+            const line_map = file_entry.value_ptr;
+
+            // Build sorted list of line coverages
+            var lines: std.ArrayList(LineCoverage) = .empty;
+            errdefer lines.deinit(self.allocator);
+
+            var line_it = line_map.iterator();
+            while (line_it.next()) |le| {
+                try lines.append(self.allocator, .{ .line = le.key_ptr.*, .hit_count = le.value_ptr.* });
+            }
+
+            std.mem.sort(LineCoverage, lines.items, {}, struct {
+                fn lt(_: void, a: LineCoverage, b: LineCoverage) bool {
+                    return a.line < b.line;
+                }
+            }.lt);
+
+            for (lines.items) |lc| {
+                summary.lines_found += 1;
+                if (lc.hit_count > 0) summary.lines_hit += 1;
+            }
+
+            try files.append(self.allocator, .{
+                .path = path,
+                .lines = try lines.toOwnedSlice(self.allocator),
+                .functions = &.{},
+            });
+        }
+
+        return CoverageData{
+            .allocator = self.allocator,
+            .files = try files.toOwnedSlice(self.allocator),
+            .summary = summary,
+        };
+    }
+};
