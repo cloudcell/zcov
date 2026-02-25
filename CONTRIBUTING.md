@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-Zig `0.16.0-dev.2637+6a9510c0e` or later. Check with:
+Zig nightly (`0.16.0-dev` or later). Check with:
 
 ```sh
 zig version

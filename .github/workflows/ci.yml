@@ -21,7 +21,7 @@ jobs:
       - name: Install Zig
         uses: mlugg/setup-zig@v1
         with:
-          version: 0.16.0-dev.2637+6a9510c0e
+          version: master
 
       - name: Build
         run: zig build

@@ -197,4 +197,4 @@ zig build test   # run unit tests
 zig build bench  # run performance benchmarks
 ```
 
-Requires Zig `0.16.0-dev.2637+6a9510c0e` or later.
+Requires Zig nightly (`0.16.0-dev` or later).
