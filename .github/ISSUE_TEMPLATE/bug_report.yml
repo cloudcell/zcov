@@ -1,0 +1,41 @@
+name: Bug report
+description: File a bug report
+labels: ["bug"]
+body:
+  - type: input
+    id: zig-version
+    attributes:
+      label: Zig version
+      description: Output of `zig version`
+      placeholder: 0.16.0-dev.XXXX+XXXXXXXX
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: "macOS 15 ARM64 / Ubuntu 24.04 x86_64"
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Describe the bug and what you expected to happen.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. ...
+        2. ...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant output
+      description: Paste any error messages or terminal output.
+      render: shell
