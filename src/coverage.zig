@@ -89,15 +89,18 @@ pub const Builder = struct {
     pub fn deinit(self: *Builder) void {
         var it = self.file_map.iterator();
         while (it.next()) |entry| {
+            self.allocator.free(entry.key_ptr.*); // free the owned copy
             entry.value_ptr.deinit();
         }
         self.file_map.deinit();
     }
 
     /// Record that `line` in `file_path` was hit.
+    /// Builder copies `file_path` on first insertion and owns the copy.
     pub fn recordHit(self: *Builder, file_path: []const u8, line: u32) !void {
         const gop = try self.file_map.getOrPut(file_path);
         if (!gop.found_existing) {
+            gop.key_ptr.* = try self.allocator.dupe(u8, file_path);
             gop.value_ptr.* = std.AutoHashMap(u32, u32).init(self.allocator);
         }
         const count_gop = try gop.value_ptr.getOrPut(line);

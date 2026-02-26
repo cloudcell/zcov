@@ -25,6 +25,16 @@ const std = @import("std");
 const zcov = @import("zcov_format.zig");
 
 // ---------------------------------------------------------------------------
+// Required SanitizerCoverage ABI symbols
+// ---------------------------------------------------------------------------
+
+/// LLVM's -fsanitize-coverage-trace-pc-guard instrumentation reads and writes
+/// this thread-local variable to track the lowest stack pointer seen per thread
+/// (used for stack-depth coverage). We provide the symbol to satisfy the linker;
+/// zig-cov does not use its value.
+export threadlocal var __sancov_lowest_stack: usize = std.math.maxInt(usize);
+
+// ---------------------------------------------------------------------------
 // Global state (lives in BSS; initialized to zero)
 // ---------------------------------------------------------------------------
 

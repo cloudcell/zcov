@@ -39,3 +39,6 @@ jobs:
 
       - name: Bench
         run: zig build bench
+
+      - name: Integration test
+        run: zig build itest

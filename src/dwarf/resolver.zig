@@ -51,7 +51,11 @@ pub fn resolveAddresses(
     const path: std.Build.Cache.Path = .{
         .root_dir = .{
             .handle = dir_handle,
-            .path = null,
+            // Must be non-null so Cache.Path.toString() produces the full
+            // absolute path. With path=null, toString() emits only the basename,
+            // which can accidentally open a same-named directory in CWD and
+            // cause mmap(EINVAL) on macOS.
+            .path = dirname,
         },
         .sub_path = std.fs.path.basename(bin_path),
     };

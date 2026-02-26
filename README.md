@@ -75,8 +75,8 @@ const coverage = b.option(bool, "coverage", "Enable zig-cov") orelse false;
 const rt_path  = b.option([]const u8, "coverage-rt", "zig-cov-rt path") orelse null;
 
 if (coverage) {
-    unit_tests.root_module.sanitize_coverage_trace_pc_guard = true;
-    if (rt_path) |p| unit_tests.addObjectFile(.{ .cwd_relative = p });
+    unit_tests.sanitize_coverage_trace_pc_guard = true;
+    if (rt_path) |p| unit_tests.root_module.addObjectFile(.{ .cwd_relative = p });
 }
 ```
 

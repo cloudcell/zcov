@@ -62,6 +62,29 @@ pub fn build(b: *std.Build) void {
     const run_rt_tests = b.addRunArtifact(rt_tests);
     test_step.dependOn(&run_rt_tests.step);
 
+    // Integration test (run with: zig build itest)
+    // Builds the sample project under test/sample/ with coverage and verifies
+    // that the full pipeline (sancov → .zcov → DWARF → report) is correct.
+    const itest_options = b.addOptions();
+    itest_options.addOption([]const u8, "rt_lib_path", b.getInstallPath(.lib, "libzig-cov-rt.a"));
+    itest_options.addOption([]const u8, "sample_dir", b.pathFromRoot("test/sample"));
+    itest_options.addOption([]const u8, "zig_exe", b.graph.zig_exe);
+
+    const itest_exe = b.addExecutable(.{
+        .name = "zig-cov-itest",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/integration_test.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    itest_exe.root_module.addOptions("build_options", itest_options);
+    itest_exe.step.dependOn(b.getInstallStep()); // ensure libzig-cov-rt.a is installed first
+
+    const run_itest = b.addRunArtifact(itest_exe);
+    const itest_step = b.step("itest", "Run integration tests (full pipeline: sancov → .zcov → DWARF → report)");
+    itest_step.dependOn(&run_itest.step);
+
     // Synthetic benchmarks (run with: zig build bench)
     const bench_exe = b.addExecutable(.{
         .name = "zig-cov-bench",
