@@ -36,6 +36,7 @@ const CFile = opaque {};
 extern "c" fn fopen(path: [*:0]const u8, mode: [*:0]const u8) ?*CFile;
 extern "c" fn fclose(stream: *CFile) c_int;
 extern "c" fn fwrite(ptr: *const anyopaque, size: usize, count: usize, stream: *CFile) usize;
+extern "c" fn fread(ptr: *anyopaque, size: usize, count: usize, stream: *CFile) usize;
 
 /// Write a .zcov file to `path`. `pcs` are runtime (slid) PC addresses.
 /// `slide` is the ASLR slide for the current process.
@@ -127,4 +128,46 @@ pub fn read(allocator: std.mem.Allocator, io: std.Io, path: []const u8) ReadErro
         .pcs = pcs,
         .allocator = allocator,
     };
+}
+
+test "zcov_format write produces valid header bytes" {
+    const path: [:0]const u8 = "/tmp/zcov-unit-hdr.zcov";
+    const pcs = [_]u64{ 0x1000, 0x2000, 0x3000 };
+    const bin = "/usr/bin/test-bin";
+    try write(path, -256, bin, &pcs);
+
+    const f = fopen(path.ptr, "rb") orelse return error.TestFailed;
+    defer _ = fclose(f);
+
+    var hdr: Header = undefined;
+    try std.testing.expectEqual(@as(usize, 1), fread(@ptrCast(&hdr), @sizeOf(Header), 1, f));
+    try std.testing.expectEqualSlices(u8, &magic, &hdr.magic);
+    try std.testing.expectEqual(version, hdr.version);
+    try std.testing.expectEqual(@as(i64, -256), hdr.slide);
+    try std.testing.expectEqual(@as(u32, 3), hdr.num_pcs);
+    try std.testing.expectEqual(@as(u16, bin.len), hdr.bin_path_len);
+}
+
+test "zcov_format write empty pcs produces zero num_pcs in header" {
+    const path: [:0]const u8 = "/tmp/zcov-unit-empty.zcov";
+    try write(path, 0, "/bin/empty", &.{});
+
+    const f = fopen(path.ptr, "rb") orelse return error.TestFailed;
+    defer _ = fclose(f);
+
+    var hdr: Header = undefined;
+    _ = fread(@ptrCast(&hdr), @sizeOf(Header), 1, f);
+    try std.testing.expectEqualSlices(u8, &magic, &hdr.magic);
+    try std.testing.expectEqual(@as(u32, 0), hdr.num_pcs);
+}
+
+test "zcov_format write returns error for bin_path exceeding u16 max" {
+    const alloc = std.testing.allocator;
+    const too_long = try alloc.alloc(u8, std.math.maxInt(u16) + 1);
+    defer alloc.free(too_long);
+    @memset(too_long, 'x');
+    try std.testing.expectError(
+        error.BinPathTooLong,
+        write("/tmp/zcov-unit-toolong.zcov", 0, too_long, &.{}),
+    );
 }

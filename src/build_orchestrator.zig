@@ -143,13 +143,13 @@ fn findZig(allocator: std.mem.Allocator, io: std.Io) ![]u8 {
         .argv = &.{ "which", "zig" },
         .stdout_limit = std.Io.Limit.limited(1024),
     }) catch return error.ZigNotFound;
+    defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
     if (result.term == .exited and result.term.exited == 0) {
         const path = std.mem.trim(u8, result.stdout, "\n\r ");
         return allocator.dupe(u8, path);
     }
-    allocator.free(result.stdout);
     return error.ZigNotFound;
 }
 

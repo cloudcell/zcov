@@ -30,6 +30,8 @@ pub fn main(init: std.process.Init) !void {
 
     std.debug.print("=== zig-cov integration test ===\n", .{});
 
+    var step: u32 = 0;
+
     // Create a temp dir to collect .zcov output from the sample binary.
     var tmp_buf: [std.fs.max_path_bytes]u8 = undefined;
     const pid = std.c.getpid();
@@ -51,7 +53,8 @@ pub fn main(init: std.process.Init) !void {
     }
 
     check(zcov_files.len > 0, "no .zcov files produced — is ZIG_COV_DIR being picked up?");
-    std.debug.print("PASS [1/5] {d} .zcov file(s) produced\n", .{zcov_files.len});
+    step += 1;
+    std.debug.print("PASS [{d}] {d} .zcov file(s) produced\n", .{ step, zcov_files.len });
 
     // Step 3: read each .zcov file, resolve PCs through DWARF.
     var builder = coverage_mod.Builder.init(gpa);
@@ -79,29 +82,34 @@ pub fn main(init: std.process.Init) !void {
     }
 
     check(total_pcs > 0, ".zcov file(s) contain zero PCs — sancov callbacks not firing?");
-    std.debug.print("PASS [2/5] {d} PCs resolved through DWARF\n", .{total_pcs});
+    step += 1;
+    std.debug.print("PASS [{d}] {d} PCs resolved through DWARF\n", .{ step, total_pcs });
 
     // Step 4: find math.zig in the coverage map.
     const math_key = findFile(&builder, "math.zig") orelse {
         fail("no coverage data for math.zig — DWARF resolution produced wrong file names");
     };
-    std.debug.print("PASS [3/5] math.zig present in coverage ({s})\n", .{math_key});
+    step += 1;
+    std.debug.print("PASS [{d}] math.zig present in coverage ({s})\n", .{ step, math_key });
 
     const line_map = builder.file_map.get(math_key).?;
 
     // Step 5a: add (line 2) must be hit.
     check(line_map.get(LINE_ADD) != null, "math.zig line 2 (add) expected HIT but absent");
-    std.debug.print("PASS [4/5] math.zig:{d} (add) is hit\n", .{LINE_ADD});
+    step += 1;
+    std.debug.print("PASS [{d}] math.zig:{d} (add) is hit\n", .{ step, LINE_ADD });
 
     // Step 5b: multiply (line 10) must be hit.
     check(line_map.get(LINE_MULTIPLY) != null, "math.zig line 10 (multiply) expected HIT but absent");
-    std.debug.print("PASS [4/5] math.zig:{d} (multiply) is hit\n", .{LINE_MULTIPLY});
+    step += 1;
+    std.debug.print("PASS [{d}] math.zig:{d} (multiply) is hit\n", .{ step, LINE_MULTIPLY });
 
     // Step 5c: subtract (line 6) must NOT be hit.
     check(line_map.get(LINE_SUBTRACT) == null, "math.zig line 6 (subtract) expected NOT HIT but was recorded");
-    std.debug.print("PASS [5/5] math.zig:{d} (subtract) is correctly absent\n", .{LINE_SUBTRACT});
+    step += 1;
+    std.debug.print("PASS [{d}] math.zig:{d} (subtract) is correctly absent\n", .{ step, LINE_SUBTRACT });
 
-    std.debug.print("=== all integration tests passed ===\n", .{});
+    std.debug.print("=== all {d} integration tests passed ===\n", .{step});
 }
 
 // ---------------------------------------------------------------------------

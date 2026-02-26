@@ -178,3 +178,103 @@ test "summary write no crash" {
     try std.testing.expect(passes);
     try std.testing.expect(buf.written().len > 0);
 }
+
+test "summary output contains file path and percentage" {
+    const alloc = std.testing.allocator;
+    var buf = std.Io.Writer.Allocating.init(alloc);
+    defer buf.deinit();
+
+    const lines = [_]coverage.LineCoverage{
+        .{ .line = 1, .hit_count = 1 },
+        .{ .line = 2, .hit_count = 1 },
+        .{ .line = 3, .hit_count = 0 },
+        .{ .line = 4, .hit_count = 0 },
+    };
+    const fc = coverage.FileCoverage{
+        .path = "src/parser.zig",
+        .lines = @constCast(&lines),
+        .functions = &.{},
+    };
+    const data = coverage.CoverageData{
+        .allocator = alloc,
+        .files = @constCast(&[_]coverage.FileCoverage{fc}),
+        .summary = .{ .lines_found = 4, .lines_hit = 2, .functions_found = 0, .functions_hit = 0 },
+    };
+
+    _ = try write(&buf.writer, &data, .{ .color = false });
+    const out = buf.written();
+
+    try std.testing.expect(std.mem.indexOf(u8, out, "src/parser.zig") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "50.0%") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Total") != null);
+}
+
+test "summary fail_under passes when coverage is above threshold" {
+    const alloc = std.testing.allocator;
+    var buf = std.Io.Writer.Allocating.init(alloc);
+    defer buf.deinit();
+
+    const lines = [_]coverage.LineCoverage{
+        .{ .line = 1, .hit_count = 1 },
+        .{ .line = 2, .hit_count = 1 },
+    };
+    const fc = coverage.FileCoverage{
+        .path = "src/x.zig",
+        .lines = @constCast(&lines),
+        .functions = &.{},
+    };
+    const data = coverage.CoverageData{
+        .allocator = alloc,
+        .files = @constCast(&[_]coverage.FileCoverage{fc}),
+        .summary = .{ .lines_found = 2, .lines_hit = 2, .functions_found = 0, .functions_hit = 0 },
+    };
+
+    const passes = try write(&buf.writer, &data, .{ .color = false, .fail_under = 80.0 });
+    try std.testing.expect(passes); // 100% >= 80%
+}
+
+test "summary fail_under fails when coverage is below threshold" {
+    const alloc = std.testing.allocator;
+    var buf = std.Io.Writer.Allocating.init(alloc);
+    defer buf.deinit();
+
+    const lines = [_]coverage.LineCoverage{
+        .{ .line = 1, .hit_count = 1 },
+        .{ .line = 2, .hit_count = 0 },
+    };
+    const fc = coverage.FileCoverage{
+        .path = "src/y.zig",
+        .lines = @constCast(&lines),
+        .functions = &.{},
+    };
+    const data = coverage.CoverageData{
+        .allocator = alloc,
+        .files = @constCast(&[_]coverage.FileCoverage{fc}),
+        .summary = .{ .lines_found = 2, .lines_hit = 1, .functions_found = 0, .functions_hit = 0 },
+    };
+
+    const passes = try write(&buf.writer, &data, .{ .color = false, .fail_under = 80.0 });
+    try std.testing.expect(!passes); // 50% < 80%
+    try std.testing.expect(std.mem.indexOf(u8, buf.written(), "below the threshold") != null);
+}
+
+test "summary no-color output contains no ANSI escape codes" {
+    const alloc = std.testing.allocator;
+    var buf = std.Io.Writer.Allocating.init(alloc);
+    defer buf.deinit();
+
+    const lines = [_]coverage.LineCoverage{.{ .line = 1, .hit_count = 1 }};
+    const fc = coverage.FileCoverage{
+        .path = "src/z.zig",
+        .lines = @constCast(&lines),
+        .functions = &.{},
+    };
+    const data = coverage.CoverageData{
+        .allocator = alloc,
+        .files = @constCast(&[_]coverage.FileCoverage{fc}),
+        .summary = .{ .lines_found = 1, .lines_hit = 1, .functions_found = 0, .functions_hit = 0 },
+    };
+
+    _ = try write(&buf.writer, &data, .{ .color = false });
+    try std.testing.expect(std.mem.indexOf(u8, buf.written(), "\x1b[") == null);
+}

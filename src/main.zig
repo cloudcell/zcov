@@ -200,11 +200,11 @@ fn cmdReport(gpa: std.mem.Allocator, io: std.Io, raw_args: []const []const u8) !
         std.process.exit(1);
     }
 
-    var opts = try parseOpts(gpa, &.{});
+    var opts = try parseOpts(gpa, raw_args);
     defer opts.deinit(gpa);
 
-    // Positional args are the .zcov files.
-    const zcov_files = raw_args;
+    // Positional args (non-option args) are the .zcov files.
+    const zcov_files = opts.extra_args.items;
     try generateReport(gpa, io, zcov_files, &opts);
 }
 

@@ -38,12 +38,15 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Run zig-cov");
     run_step.dependOn(&run_cmd.step);
 
-    // Tests for zig-cov itself (main + report + coverage model)
+    // Tests for zig-cov itself (main + report + coverage model).
+    // link_libc = true is required because zcov_format.zig (imported transitively)
+    // has tests that call fopen/fread, which need the system C library.
     const unit_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
+            .link_libc = true,
         }),
     });
     const run_unit_tests = b.addRunArtifact(unit_tests);
@@ -61,6 +64,20 @@ pub fn build(b: *std.Build) void {
     });
     const run_rt_tests = b.addRunArtifact(rt_tests);
     test_step.dependOn(&run_rt_tests.step);
+
+    // Coverage model + report formatter tests.
+    // Uses a dedicated root (report_tests.zig) so that DCE does not drop these
+    // modules: their code is only reachable from the CLI main, which is replaced
+    // by the test runner and therefore eliminated in a test binary.
+    const report_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/report_tests.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_report_tests = b.addRunArtifact(report_tests);
+    test_step.dependOn(&run_report_tests.step);
 
     // Integration test (run with: zig build itest)
     // Builds the sample project under test/sample/ with coverage and verifies

@@ -163,3 +163,85 @@ pub const Builder = struct {
         };
     }
 };
+
+test "Builder recordHit increments count" {
+    var bldr = Builder.init(std.testing.allocator);
+    defer bldr.deinit();
+
+    try bldr.recordHit("foo.zig", 5);
+    try bldr.recordHit("foo.zig", 5);
+    try bldr.recordHit("foo.zig", 5);
+
+    const line_map = bldr.file_map.get("foo.zig").?;
+    try std.testing.expectEqual(@as(u32, 3), line_map.get(5).?);
+}
+
+test "Builder recordHit tracks multiple files independently" {
+    var bldr = Builder.init(std.testing.allocator);
+    defer bldr.deinit();
+
+    try bldr.recordHit("a.zig", 1);
+    try bldr.recordHit("b.zig", 2);
+
+    try std.testing.expectEqual(@as(usize, 2), bldr.file_map.count());
+    try std.testing.expectEqual(@as(u32, 1), bldr.file_map.get("a.zig").?.get(1).?);
+    try std.testing.expectEqual(@as(u32, 1), bldr.file_map.get("b.zig").?.get(2).?);
+}
+
+test "Builder recordHit copies key string" {
+    var bldr = Builder.init(std.testing.allocator);
+    defer bldr.deinit();
+
+    // Allocate a key, record a hit, then free the original.
+    // The builder must own its own copy so the map remains valid afterward.
+    const key = try std.testing.allocator.dupe(u8, "owned.zig");
+    try bldr.recordHit(key, 1);
+    std.testing.allocator.free(key);
+
+    try std.testing.expect(bldr.file_map.contains("owned.zig"));
+}
+
+test "Builder build produces sorted lines and correct summary" {
+    var bldr = Builder.init(std.testing.allocator);
+    defer bldr.deinit();
+
+    try bldr.recordHit("z.zig", 10);
+    try bldr.recordHit("z.zig", 2);
+    try bldr.recordHit("z.zig", 2); // line 2 hit twice
+
+    var cov = try bldr.build();
+    defer cov.deinit(); // runs before bldr.deinit() (LIFO)
+
+    try std.testing.expectEqual(@as(usize, 1), cov.files.len);
+    const lines = cov.files[0].lines;
+    try std.testing.expectEqual(@as(usize, 2), lines.len);
+    // Lines sorted by number: 2 then 10
+    try std.testing.expectEqual(@as(u32, 2), lines[0].line);
+    try std.testing.expectEqual(@as(u32, 2), lines[0].hit_count);
+    try std.testing.expectEqual(@as(u32, 10), lines[1].line);
+    try std.testing.expectEqual(@as(u32, 1), lines[1].hit_count);
+    try std.testing.expectEqual(@as(u32, 2), cov.summary.lines_found);
+    try std.testing.expectEqual(@as(u32, 2), cov.summary.lines_hit);
+}
+
+test "Summary linePercent and functionPercent" {
+    const s = Summary{
+        .lines_found = 10,
+        .lines_hit = 5,
+        .functions_found = 4,
+        .functions_hit = 3,
+    };
+    try std.testing.expectApproxEqAbs(@as(f64, 50.0), s.linePercent(), 0.001);
+    try std.testing.expectApproxEqAbs(@as(f64, 75.0), s.functionPercent(), 0.001);
+}
+
+test "Summary returns 100 percent when no items" {
+    const s = Summary{
+        .lines_found = 0,
+        .lines_hit = 0,
+        .functions_found = 0,
+        .functions_hit = 0,
+    };
+    try std.testing.expectApproxEqAbs(@as(f64, 100.0), s.linePercent(), 0.001);
+    try std.testing.expectApproxEqAbs(@as(f64, 100.0), s.functionPercent(), 0.001);
+}

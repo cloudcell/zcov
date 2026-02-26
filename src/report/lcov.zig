@@ -85,3 +85,71 @@ test "lcov basic output" {
     try std.testing.expect(std.mem.indexOf(u8, out, "LH:2") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "end_of_record") != null);
 }
+
+test "lcov function coverage output" {
+    const alloc = std.testing.allocator;
+    var buf = std.Io.Writer.Allocating.init(alloc);
+    defer buf.deinit();
+
+    const functions = [_]coverage.FunctionCoverage{
+        .{ .name = "myFunc", .start_line = 3, .hit_count = 2 },
+        .{ .name = "unusedFunc", .start_line = 10, .hit_count = 0 },
+    };
+    const lines = [_]coverage.LineCoverage{
+        .{ .line = 3, .hit_count = 2 },
+        .{ .line = 10, .hit_count = 0 },
+    };
+    const fc = coverage.FileCoverage{
+        .path = "src/funcs.zig",
+        .lines = @constCast(&lines),
+        .functions = @constCast(&functions),
+    };
+    const data = coverage.CoverageData{
+        .allocator = alloc,
+        .files = @constCast(&[_]coverage.FileCoverage{fc}),
+        .summary = .{ .lines_found = 2, .lines_hit = 1, .functions_found = 2, .functions_hit = 1 },
+    };
+
+    try write(&buf.writer, &data);
+    const out = buf.written();
+
+    try std.testing.expect(std.mem.indexOf(u8, out, "FN:3,myFunc") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "FN:10,unusedFunc") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "FNDA:2,myFunc") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "FNDA:0,unusedFunc") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "FNF:2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "FNH:1") != null);
+}
+
+test "lcov multiple files each get their own end_of_record" {
+    const alloc = std.testing.allocator;
+    var buf = std.Io.Writer.Allocating.init(alloc);
+    defer buf.deinit();
+
+    const lines1 = [_]coverage.LineCoverage{.{ .line = 1, .hit_count = 1 }};
+    const lines2 = [_]coverage.LineCoverage{.{ .line = 1, .hit_count = 0 }};
+    const files = [_]coverage.FileCoverage{
+        .{ .path = "src/a.zig", .lines = @constCast(&lines1), .functions = &.{} },
+        .{ .path = "src/b.zig", .lines = @constCast(&lines2), .functions = &.{} },
+    };
+    const data = coverage.CoverageData{
+        .allocator = alloc,
+        .files = @constCast(&files),
+        .summary = .{ .lines_found = 2, .lines_hit = 1, .functions_found = 0, .functions_hit = 0 },
+    };
+
+    try write(&buf.writer, &data);
+    const out = buf.written();
+
+    try std.testing.expect(std.mem.indexOf(u8, out, "SF:src/a.zig") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "SF:src/b.zig") != null);
+
+    // Count end_of_record — must be exactly one per file.
+    var count: usize = 0;
+    var rest = out;
+    while (std.mem.indexOf(u8, rest, "end_of_record")) |pos| {
+        count += 1;
+        rest = rest[pos + 1 ..];
+    }
+    try std.testing.expectEqual(@as(usize, 2), count);
+}
