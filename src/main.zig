@@ -221,17 +221,85 @@ fn generateReport(
     var builder = coverage.Builder.init(gpa);
     defer builder.deinit();
 
+    // Collect (bin_path, slide) pairs from .zcov files.
+    var bin_slides: std.ArrayList(struct { path: []const u8, slide: i64 }) = .empty;
+    errdefer {
+        for (bin_slides.items) |bs| gpa.free(bs.path);
+        bin_slides.deinit(gpa);
+    }
+
     for (zcov_files) |zcov_path| {
         processZcovFile(gpa, io, zcov_path, &builder) catch |err| {
             std.debug.print("zig-cov: warning: failed to process '{s}': {}\n", .{ zcov_path, err });
+            continue;
         };
+        // Record binary info for function boundary extraction later.
+        var data = zcov_format.read(gpa, io, zcov_path) catch continue;
+        defer data.deinit();
+        // Deduplicate: only add if not already present.
+        var is_dup = false;
+        for (bin_slides.items) |bs| {
+            if (std.mem.eql(u8, bs.path, data.bin_path) and bs.slide == data.slide) {
+                is_dup = true;
+                break;
+            }
+        }
+        if (!is_dup) {
+            try bin_slides.append(gpa, .{ .path = try gpa.dupe(u8, data.bin_path), .slide = data.slide });
+        }
     }
 
-    var cov_data = try builder.build();
-    defer cov_data.deinit();
+    // Extract function boundaries for each unique binary.
+    var all_func_boundaries: std.ArrayList(coverage.FunctionBoundaryMapEntry) = .empty;
+    errdefer {
+        for (all_func_boundaries.items) |entry| {
+            gpa.free(entry.file_path);
+            gpa.free(entry.functions);
+        }
+        all_func_boundaries.deinit(gpa);
+    }
+
+    for (bin_slides.items) |bs| {
+        const func_bounds = resolver.extractFunctionBoundaries(
+            gpa,
+            io,
+            bs.path,
+            bs.slide,
+        ) catch |err| {
+            std.debug.print(
+                "zig-cov: warning: function boundary extraction failed for '{s}': {}\n",
+                .{ bs.path, err },
+            );
+            continue;
+        };
+        if (func_bounds.len > 0) {
+            const entry = coverage.FunctionBoundaryMapEntry{
+                .file_path = try gpa.dupe(u8, bs.path),
+                .functions = try gpa.dupe(coverage.FunctionBoundary, func_bounds),
+            };
+            gpa.free(func_bounds);
+            try all_func_boundaries.append(gpa, entry);
+        }
+    }
+    for (bin_slides.items) |bs| gpa.free(bs.path);
+    bin_slides.deinit(gpa);
+
+    const func_bounds_slice = if (all_func_boundaries.items.len > 0)
+        all_func_boundaries.items
+    else
+        &[_]coverage.FunctionBoundaryMapEntry{};
+
+    var cov_data = try builder.build(func_bounds_slice);
+    // Don't defer cov_data.deinit() here — we need to clean up all_func_boundaries first.
 
     if (cov_data.files.len == 0) {
         std.debug.print("zig-cov: no coverage data could be resolved\n", .{});
+        cov_data.deinit();
+        for (all_func_boundaries.items) |entry| {
+            gpa.free(entry.file_path);
+            gpa.free(entry.functions);
+        }
+        all_func_boundaries.deinit(gpa);
         std.process.exit(1);
     }
 
@@ -240,16 +308,17 @@ fn generateReport(
     var stdout_fw = std.Io.File.stdout().writer(io, &stdout_buf);
     const stdout = &stdout_fw.interface;
 
+    var passes: bool = undefined;
     switch (opts.format) {
         .summary => {
-            const passes = try summary_report.write(stdout, &cov_data, .{
+            passes = try summary_report.write(stdout, &cov_data, .{
                 .color = opts.color,
                 .fail_under = opts.fail_under,
             });
             try stdout.flush();
-            if (!passes) std.process.exit(1);
         },
         .lcov => {
+            passes = true; // fail_under only checks line coverage for summary
             if (opts.output) |out_path| {
                 var file = try std.Io.Dir.createFileAbsolute(io, out_path, .{});
                 defer file.close(io);
@@ -264,8 +333,19 @@ fn generateReport(
             }
         },
     }
+
+    // Clean up in reverse order.
+    cov_data.deinit();
+    for (all_func_boundaries.items) |entry| {
+        gpa.free(entry.file_path);
+        gpa.free(entry.functions);
+    }
+    all_func_boundaries.deinit(gpa);
+
+    if (!passes) std.process.exit(1);
 }
 
+/// Process a single .zcov file: resolve PCs to file:line and record hits.
 fn processZcovFile(
     gpa: std.mem.Allocator,
     io: std.Io,

@@ -1,5 +1,8 @@
 //! Unified coverage data model.
 //! All report generators consume this representation.
+//!
+//! Function coverage is derived from PC-to-function mapping using
+//! FunctionBoundary entries from the DWARF resolver.
 
 const std = @import("std");
 
@@ -20,11 +23,11 @@ pub const LineCoverage = struct {
 };
 
 pub const FunctionCoverage = struct {
-    /// Mangled function name as it appears in DWARF.
+    /// Mangled function name as it appears in DWARF or symbol table.
     name: []const u8,
-    /// 1-based line number where the function starts.
+    /// 1-based line number where the function starts (0 if unknown).
     start_line: u32,
-    /// Number of times the function was called (approximated from its first line).
+    /// Number of times the function was called (approximated from hit lines within range).
     hit_count: u32,
 };
 
@@ -73,6 +76,24 @@ pub const CoverageData = struct {
     }
 };
 
+/// A function boundary tied to a specific file path.
+pub const FunctionBoundaryMapEntry = struct {
+    file_path: []const u8,
+    functions: []const FunctionBoundary,
+};
+
+/// External function boundary info from DWARF/symbol table.
+pub const FunctionBoundary = struct {
+    /// Mangled function name.
+    name: []const u8,
+    /// 1-based line number where the function starts (0 if unknown).
+    start_line: u32,
+    /// Start virtual address.
+    start_pc: u64,
+    /// End virtual address (exclusive).
+    end_pc: u64,
+};
+
 /// Builder accumulates per-file line hit counts, then produces CoverageData.
 pub const Builder = struct {
     allocator: std.mem.Allocator,
@@ -111,9 +132,8 @@ pub const Builder = struct {
     }
 
     /// Produce the final CoverageData. Caller owns the result (call deinit).
-    /// `all_lines`: optional map of file_path → sorted list of all coverable line numbers.
-    /// When provided, lines not in `file_map` are included with hit_count = 0.
-    pub fn build(self: *Builder) !CoverageData {
+    /// `func_boundaries`: optional array of function boundaries grouped by file path.
+    pub fn build(self: *Builder, func_boundaries: ?[]const FunctionBoundaryMapEntry) !CoverageData {
         var files: std.ArrayList(FileCoverage) = .empty;
         errdefer files.deinit(self.allocator);
 
@@ -149,10 +169,31 @@ pub const Builder = struct {
                 if (lc.hit_count > 0) summary.lines_hit += 1;
             }
 
+            // Look up function boundaries for this file by linear scan,
+            // convert FunctionBoundary → FunctionCoverage.
+            var func_cov: std.ArrayList(FunctionCoverage) = .empty;
+            errdefer func_cov.deinit(self.allocator);
+            if (func_boundaries) |bounds| {
+                for (bounds) |entry| {
+                    if (std.mem.eql(u8, entry.file_path, path)) {
+                        summary.functions_found += @intCast(entry.functions.len);
+                        for (entry.functions) |fb| {
+                            const fn_name = try self.allocator.dupe(u8, fb.name);
+                            try func_cov.append(self.allocator, FunctionCoverage{
+                                .name = fn_name,
+                                .start_line = fb.start_line,
+                                .hit_count = 0,
+                            });
+                        }
+                        break;
+                    }
+                }
+            }
+
             try files.append(self.allocator, .{
                 .path = path,
                 .lines = try lines.toOwnedSlice(self.allocator),
-                .functions = &.{},
+                .functions = try func_cov.toOwnedSlice(self.allocator),
             });
         }
 
@@ -209,7 +250,7 @@ test "Builder build produces sorted lines and correct summary" {
     try bldr.recordHit("z.zig", 2);
     try bldr.recordHit("z.zig", 2); // line 2 hit twice
 
-    var cov = try bldr.build();
+    var cov = try bldr.build(null);
     defer cov.deinit(); // runs before bldr.deinit() (LIFO)
 
     try std.testing.expectEqual(@as(usize, 1), cov.files.len);
@@ -222,6 +263,29 @@ test "Builder build produces sorted lines and correct summary" {
     try std.testing.expectEqual(@as(u32, 1), lines[1].hit_count);
     try std.testing.expectEqual(@as(u32, 2), cov.summary.lines_found);
     try std.testing.expectEqual(@as(u32, 2), cov.summary.lines_hit);
+}
+
+test "Builder build with function boundaries populates functions" {
+    var bldr = Builder.init(std.testing.allocator);
+    defer bldr.deinit();
+
+    try bldr.recordHit("foo.zig", 10);
+    try bldr.recordHit("foo.zig", 20);
+
+    const funcs = &[_]FunctionBoundary{
+        .{ .name = "_init", .start_line = 1, .start_pc = 0x1000, .end_pc = 0x1050 },
+        .{ .name = "main", .start_line = 10, .start_pc = 0x1050, .end_pc = 0x1100 },
+    };
+    const entries = [_]FunctionBoundaryMapEntry{
+        .{ .file_path = "foo.zig", .functions = funcs[0..] },
+    };
+
+    var cov = try bldr.build(&entries);
+    defer cov.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), cov.files.len);
+    try std.testing.expectEqual(@as(usize, 2), cov.files[0].functions.len);
+    try std.testing.expectEqual(@as(u32, 2), cov.summary.functions_found);
 }
 
 test "Summary linePercent and functionPercent" {

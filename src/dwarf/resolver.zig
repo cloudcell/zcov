@@ -20,6 +20,126 @@ pub const ResolveError = std.debug.Info.LoadError || std.debug.Info.ResolveAddre
     NoDebugInfo,
 };
 
+/// Function boundary information extracted from binary symbols.
+pub const FunctionBoundary = struct {
+    /// Mangled function name.
+    name: []const u8,
+    /// 1-based line number where function starts (from DWARF).
+    start_line: u32,
+    /// Start virtual address (with ASLR slide applied).
+    start_pc: u64,
+    /// End virtual address (exclusive).
+    end_pc: u64,
+};
+
+/// Extract function boundaries from the binary's symbol table using readelf.
+///
+/// On Linux (ELF), runs `readelf --syms` to get function symbols with sizes.
+/// Returns an empty list if the tool is unavailable or the binary has no symbols.
+///
+/// `slide` is the ASLR slide from the .zcov file. Addresses from readelf are
+/// virtual addresses (already with ASLR applied), so no adjustment is needed.
+pub fn extractFunctionBoundaries(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    bin_path: []const u8,
+    slide: i64,
+) anyerror![]FunctionBoundary {
+    _ = io;
+    _ = slide;
+
+    // Only support ELF on Linux for now; Mach-O support via `nm` is a future enhancement.
+    if (builtin.os.tag != .linux) return &.{};
+
+    var functions = std.ArrayList(FunctionBoundary).init(allocator);
+    errdefer {
+        for (functions.items) |f| allocator.free(f.name);
+        functions.deinit();
+    }
+
+    // Run `readelf --syms` to get the symbol table.
+    var child = std.ChildProcess.init(&[_][]const u8{ "readelf", "--syms", bin_path }, allocator);
+    child.stdout_behavior = .Pipe;
+    child.stderr_behavior = .Ignore;
+    try child.spawn();
+    const wait_result = try child.wait();
+    if (wait_result.Exited != .success) {
+        // readelf not available or failed; return empty list gracefully.
+        return &.{};
+    }
+
+    const stdout = child.stdout.?.toOwnedSlice();
+    defer allocator.free(stdout);
+
+    // Parse readelf output line by line.
+    // Example symbol table entry:
+    //   123: 0000000000001234  56  FUNC  LOCAL  DEFAULT   12 my_function
+    // We want FUNC symbols with non-zero size.
+    var lines = std.mem.tokenizeScalar(u8, stdout, '\n');
+    while (lines.next()) |line| {
+        // Each line in the symbol table section looks like:
+        //   <symidx>: <address> <size> <type> <bind> <vis> <ndx> <name>
+        // Skip lines that don't start with a hex index.
+        const colon_pos = std.mem.indexOfScalar(u8, line, ':') orelse continue;
+        const symidx_str = std.mem.trim(u8, line[0..colon_pos], " ");
+        // Verify it looks like a symbol index (hex number).
+        if (std.ascii.isHex(symidx_str[0]) == false) continue;
+
+        const rest = line[colon_pos + 1 ..];
+        const parts = std.mem.tokenizeAny(u8, rest, " \t");
+
+        var addresses = std.ArrayList([]const u8).init(allocator);
+        errdefer addresses.deinit();
+        var parsed: usize = 0;
+        var it = parts.iterator();
+        while (it.next()) |p| {
+            if (std.ascii.isHex(p[0]) and p.len <= 16) {
+                try addresses.append(p.*);
+                parsed += 1;
+                if (parsed >= 7) break;
+            }
+        }
+        if (parsed < 7) continue;
+
+        const addr_s = addresses.items[0];
+        const size_s = addresses.items[1];
+        const type_s = addresses.items[2];
+
+        // Only care about FUNC symbols.
+        if (!std.mem.eql(u8, type_s, "FUNC")) continue;
+
+        const addr = std.fmt.parseInt(u64, addr_s, 16) catch continue;
+        const size = std.fmt.parseInt(u64, size_s, 16) catch continue;
+
+        if (size == 0) continue;
+
+        // Get function name: it's the last token on the line.
+        const name = std.mem.trim(u8, std.mem.trimLeft(u8, rest, " "), " ");
+        const last_space = std.mem.lastIndexOfScalar(u8, name, ' ') orelse continue;
+        const func_name = name[last_space + 1 ..];
+        if (func_name.len == 0) continue;
+
+        // Skip common non-function symbols.
+        if (std.mem.eql(u8, func_name, "") or func_name[0] == '.') continue;
+
+        try functions.append(FunctionBoundary{
+            .name = try allocator.dupe(u8, func_name),
+            .start_line = 0, // unknown at this stage
+            .start_pc = addr,
+            .end_pc = addr + size,
+        });
+    }
+
+    // Sort by start address for efficient binary search during coverage matching.
+    std.mem.sort(FunctionBoundary, functions.items, {}, struct {
+        fn lt(_: void, a: FunctionBoundary, b: FunctionBoundary) bool {
+            return a.start_pc < b.start_pc;
+        }
+    }.lt);
+
+    return functions.toOwnedSlice();
+}
+
 /// Resolves a batch of PC addresses (runtime, with ASLR slide applied) to
 /// source locations.
 ///
