@@ -1,6 +1,6 @@
 # zig-cov
 
-[![CI](https://github.com/ericsssan/zcov/actions/workflows/ci.yml/badge.svg)](https://github.com/ericsssan/zcov/actions/workflows/ci.yml)
+[![CI](https://github.com/cloudcell/zcov/actions/workflows/ci.yml/badge.svg)](https://github.com/cloudcell/zcov/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 Cross-platform code coverage for Zig. One command, no external dependencies.
@@ -197,4 +197,4 @@ zig build test   # run unit tests
 zig build bench  # run performance benchmarks
 ```
 
-Requires Zig nightly (`0.16.0-dev` or later).
+Requires Zig `0.17.0` or later.
