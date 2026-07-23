@@ -11,6 +11,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
+            .link_libc = true,
         }),
     });
     b.installArtifact(exe);
@@ -32,9 +33,6 @@ pub fn build(b: *std.Build) void {
     // Run step for the CLI
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
-    if (b.args) |args| {
-        run_cmd.addArgs(args);
-    }
     const run_step = b.step("run", "Run zig-cov");
     run_step.dependOn(&run_cmd.step);
 
@@ -83,8 +81,8 @@ pub fn build(b: *std.Build) void {
     // Builds the sample project under test/sample/ with coverage and verifies
     // that the full pipeline (sancov → .zcov → DWARF → report) is correct.
     const itest_options = b.addOptions();
-    itest_options.addOption([]const u8, "rt_lib_path", b.getInstallPath(.lib, "libzig-cov-rt.a"));
-    itest_options.addOption([]const u8, "sample_dir", b.pathFromRoot("test/sample"));
+    itest_options.addOption([]const u8, "rt_lib_path", "lib/libzig-cov-rt.a");
+    itest_options.addOption([]const u8, "sample_dir", "test/sample");
     itest_options.addOption([]const u8, "zig_exe", b.graph.zig_exe);
 
     const itest_exe = b.addExecutable(.{
