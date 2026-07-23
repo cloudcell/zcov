@@ -1,7 +1,9 @@
+// zig-cov: Coverage reporting tool for Zig test binaries.
+// Updated for Zig 0.17.0-dev API changes (ioBasic → io(), bufPrintZ → bufPrintSentinel, etc.)
 .{
     .name = .zig_cov,
     .fingerprint = 0x53616c3862b55df9,
     .version = "0.1.0",
-    .minimum_zig_version = "0.14.0",
+    .minimum_zig_version = "0.17.0",
     .paths = .{"."},
 }

@@ -1,3 +1,6 @@
+//! zig-cov build script.
+//! Requires Zig 0.17.0+ due to std.Io.Threaded.io() API changes, bufPrintZ removal, etc.
+
 const std = @import("std");
 
 pub fn build(b: *std.Build) void {
