@@ -14,10 +14,12 @@
 //!
 //! Build integration: users add to their build.zig:
 //!   const coverage = b.option(bool, "coverage", "Enable zig-cov") orelse false;
-//!   const rt_path  = b.option([]const u8, "coverage-rt", "zig-cov-rt.a path") orelse null;
+//!   const rt_path  = b.option([]const u8, "coverage-rt", "zig-cov-rt.o path") orelse null;
 //!   if (coverage) {
 //!       unit_tests.root_module.sanitize_coverage_trace_pc_guard = true;
-//!       if (rt_path) |p| unit_tests.addObjectFile(.{ .cwd_relative = p });
+//!       unit_tests.root_module.link_libc = true;  // runtime uses C functions
+//!       unit_tests.use_llvm = true;                // sancov needs LLVM codegen
+//!       if (rt_path) |p| unit_tests.root_module.addObjectFile(.{ .cwd_relative = p });
 //!   }
 
 const builtin = @import("builtin");

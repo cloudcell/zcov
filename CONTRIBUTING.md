@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-Zig nightly (`0.16.0-dev` or later). Check with:
+Zig nightly (`0.17.0-dev` or later). Check with:
 
 ```sh
 zig version
@@ -11,10 +11,10 @@ zig version
 ## Building
 
 ```sh
-git clone https://github.com/ericsssan/zcov
+git clone https://github.com/cloudcell/zcov
 cd zcov
 zig build
-# Produces: zig-out/bin/zig-cov  and  zig-out/lib/libzig-cov-rt.a
+# Produces: zig-out/bin/zig-cov  and  zig-out/lib/zig-cov-rt.o
 ```
 
 ## Testing
@@ -61,7 +61,7 @@ zig fmt src/
 
 ## Reporting bugs
 
-Use the [bug report template](https://github.com/ericsssan/zcov/issues/new?template=bug_report.yml).
+Use the [bug report template](https://github.com/cloudcell/zcov/issues/new?template=bug_report.yml).
 
 ## Performance
 

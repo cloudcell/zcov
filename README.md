@@ -61,7 +61,7 @@ The hot-path callback runs in **~2 ns** on Apple Silicon (measured; target was â
 git clone https://codeberg.org/ziglang/zig-coverage-tool
 cd zig-coverage-tool
 zig build -Doptimize=ReleaseSafe
-# Produces: zig-out/bin/zig-cov  and  zig-out/lib/libzig-cov-rt.a
+# Produces: zig-out/bin/zig-cov  and  zig-out/lib/zig-cov-rt.o
 ```
 
 Copy both to a directory on your `$PATH` (they must stay in the same directory).
@@ -76,6 +76,8 @@ const rt_path  = b.option([]const u8, "coverage-rt", "zig-cov-rt path") orelse n
 
 if (coverage) {
     unit_tests.sanitize_coverage_trace_pc_guard = true;
+    unit_tests.root_module.link_libc = true;   // runtime uses C functions
+    unit_tests.use_llvm = true;                 // sancov needs LLVM codegen
     if (rt_path) |p| unit_tests.root_module.addObjectFile(.{ .cwd_relative = p });
 }
 ```

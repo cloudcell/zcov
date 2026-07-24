@@ -146,9 +146,9 @@ fn runSampleWithCoverage(
     while (it.next()) |entry| try env.put(entry.key_ptr.*, entry.value_ptr.*);
     try env.put("ZIG_COV_DIR", zcov_dir);
 
-    // rt_lib_path is relative to the sample project directory (e.g., "../zig-out/lib/libzig-cov-rt.a").
+    // rt_lib_path is relative to the sample project directory (e.g., "../zig-out/lib/zig-cov-rt.o").
     // We need to resolve it to an absolute path so it works regardless of CWD.
-    // The rt_lib is installed to zig-out/lib/libzig-cov-rt.a relative to the workspace root.
+    // The rt_lib is installed to zig-out/lib/zig-cov-rt.o relative to the workspace root.
     // The integration test runs from the workspace root, so we can use the CWD as the workspace root.
     var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
     if (std.c.getcwd(&cwd_buf, cwd_buf.len) == null) fail("failed to get current working directory");
@@ -156,8 +156,9 @@ fn runSampleWithCoverage(
     var null_idx: usize = 0;
     while (null_idx < cwd_buf.len and cwd_buf[null_idx] != 0) : (null_idx += 1) {}
     const cwd_path: []const u8 = cwd_buf[0..null_idx];
-    // The rt_lib is at <workspace_root>/zig-out/lib/libzig-cov-rt.a.
-    const full_rt_path = try std.fs.path.join(gpa, &.{ cwd_path, "zig-out/lib/libzig-cov-rt.a" });
+    // The rt_lib is at <workspace_root>/zig-out/lib/zig-cov-rt.o.
+    const full_rt_path = try std.fs.path.join(gpa, &.{ cwd_path, "zig-out/lib/zig-cov-rt.o" });
+    defer gpa.free(full_rt_path);
 
     const rt_arg = try std.fmt.allocPrint(gpa, "-Dcoverage-rt={s}", .{full_rt_path});
     defer gpa.free(rt_arg);

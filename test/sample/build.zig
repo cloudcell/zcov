@@ -2,7 +2,7 @@ const std = @import("std");
 
 pub fn build(b: *std.Build) void {
     const coverage = b.option(bool, "coverage", "Enable zig-cov instrumentation") orelse false;
-    const rt_path = b.option([]const u8, "coverage-rt", "Path to libzig-cov-rt.a") orelse null;
+    const rt_path = b.option([]const u8, "coverage-rt", "Path to zig-cov-rt.o object file") orelse null;
 
     const unit_tests = b.addTest(.{
         .root_module = b.createModule(.{
@@ -14,6 +14,12 @@ pub fn build(b: *std.Build) void {
 
     if (coverage) {
         unit_tests.sanitize_coverage_trace_pc_guard = true;
+        // link_libc is required because the zig-cov runtime uses C functions
+        // (atexit, getenv, fopen, etc.) that need the system C library.
+        unit_tests.root_module.link_libc = true;
+        // Force LLVM backend: sancov instrumentation is only inserted by LLVM's
+        // codegen, not by Zig's own backend.
+        unit_tests.use_llvm = true;
         if (rt_path) |p| {
             // Zig 0.17+: Use the deprecated cwd_relative variant directly.
             // This ensures the path is resolved relative to the CWD at build time.
