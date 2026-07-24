@@ -10,6 +10,7 @@ pub fn build(b: *std.Build) void {
             .target = b.standardTargetOptions(.{}),
             .optimize = .Debug,
         }),
+        .use_llvm = coverage,
     });
 
     if (coverage) {
@@ -17,9 +18,6 @@ pub fn build(b: *std.Build) void {
         // link_libc is required because the zig-cov runtime uses C functions
         // (atexit, getenv, fopen, etc.) that need the system C library.
         unit_tests.root_module.link_libc = true;
-        // Force LLVM backend: sancov instrumentation is only inserted by LLVM's
-        // codegen, not by Zig's own backend.
-        unit_tests.use_llvm = true;
         if (rt_path) |p| {
             // Zig 0.17+: Use the deprecated cwd_relative variant directly.
             // This ensures the path is resolved relative to the CWD at build time.

@@ -173,7 +173,10 @@ fn getAslrSlide() i64 {
     if (dladdr(@ptrCast(&__sanitizer_cov_trace_pc_guard_init), &info) == 0) return 0;
     const fbase = @intFromPtr(info.dli_fbase orelse return 0);
 
-    // Read the ELF header to determine if this is a PIE binary.
+    // On macOS, all executables are PIE (ASLR always on), so fbase is the slide.
+    if (builtin.os.tag != .linux) return @intCast(fbase);
+
+    // On Linux, read the ELF header to determine if this is a PIE binary.
     // For PIE (ET_DYN): slide = fbase (ELF base virtual address is 0).
     // For non-PIE (ET_EXEC): slide = 0 (loaded at fixed address).
     const exe_path = info.dli_fname orelse return @intCast(fbase);

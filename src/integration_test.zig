@@ -126,9 +126,28 @@ fn fail(msg: []const u8) noreturn {
 }
 
 fn findFile(builder: *const coverage_mod.Builder, suffix: []const u8) ?[]const u8 {
+    // First pass: try suffix match (works on Linux where full paths are reconstructed).
     var it = builder.file_map.keyIterator();
     while (it.next()) |key| {
         if (std.mem.endsWith(u8, key.*, suffix)) return key.*;
+    }
+    // Second pass: match on basename only, excluding stdlib paths.
+    // macOS DWARF may store paths without directory prefixes.
+    const basename = std.fs.path.basename(suffix);
+    it = builder.file_map.keyIterator();
+    while (it.next()) |key| {
+        if (std.mem.eql(u8, std.fs.path.basename(key.*), basename) and
+            std.mem.indexOf(u8, key.*, "/std/") == null and
+            std.mem.indexOf(u8, key.*, "/lib/") == null)
+        {
+            return key.*;
+        }
+    }
+    // Debug: print all file names to help diagnose platform differences.
+    std.debug.print("zig-cov: files in coverage map:\n", .{});
+    it = builder.file_map.keyIterator();
+    while (it.next()) |key| {
+        std.debug.print("  '{s}'\n", .{key.*});
     }
     return null;
 }
