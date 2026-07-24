@@ -86,8 +86,8 @@ pub fn main(init: std.process.Init) !void {
     std.debug.print("PASS [{d}] {d} PCs resolved through DWARF\n", .{ step, total_pcs });
 
     // Step 4: find math.zig in the coverage map.
-    const math_key = findFile(&builder, "math.zig") orelse {
-        fail("no coverage data for math.zig — DWARF resolution produced wrong file names");
+    const math_key = findFile(&builder, "src/math.zig") orelse {
+        fail("no coverage data for src/math.zig — DWARF resolution produced wrong file names");
     };
     step += 1;
     std.debug.print("PASS [{d}] math.zig present in coverage ({s})\n", .{ step, math_key });
