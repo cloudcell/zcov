@@ -79,6 +79,22 @@ pub fn main(init: std.process.Init) !void {
             if (loc.line == 0) continue;
             try builder.recordHit(loc.file, loc.line);
         }
+
+        // Debug: print first few locations to diagnose macOS file path issues.
+        std.debug.print("zig-cov: {d} locations from {s}:\n", .{ locations.len, zcov_path });
+        var printed: usize = 0;
+        for (locations) |loc| {
+            if (printed >= 10) break;
+            std.debug.print("  line={d} file='{s}'\n", .{ loc.line, loc.file });
+            printed += 1;
+        }
+        var unknown_count: usize = 0;
+        var zero_line_count: usize = 0;
+        for (locations) |loc| {
+            if (std.mem.eql(u8, loc.file, "<unknown>")) unknown_count += 1;
+            if (loc.line == 0) zero_line_count += 1;
+        }
+        std.debug.print("zig-cov: {d} unknown, {d} zero-line out of {d}\n", .{ unknown_count, zero_line_count, locations.len });
     }
 
     check(total_pcs > 0, ".zcov file(s) contain zero PCs — sancov callbacks not firing?");

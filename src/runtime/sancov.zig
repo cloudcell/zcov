@@ -173,8 +173,12 @@ fn getAslrSlide() i64 {
     if (dladdr(@ptrCast(&__sanitizer_cov_trace_pc_guard_init), &info) == 0) return 0;
     const fbase = @intFromPtr(info.dli_fbase orelse return 0);
 
-    // On macOS, all executables are PIE (ASLR always on), so fbase is the slide.
-    if (builtin.os.tag != .linux) return @intCast(fbase);
+    // On macOS, the slide is fbase - __TEXT.vmaddr (vmaddr is typically 0x100000000 on arm64).
+    // DWARF virtual addresses are relative to vmaddr, so we must subtract vmaddr from fbase.
+    if (builtin.os.tag == .macos or builtin.os.tag == .ios) {
+        const vmaddr = readMachOTextVmaddr(info.dli_fname) orelse 0x100000000;
+        return @intCast(fbase - vmaddr);
+    }
 
     // On Linux, read the ELF header to determine if this is a PIE binary.
     // For PIE (ET_DYN): slide = fbase (ELF base virtual address is 0).
@@ -197,6 +201,51 @@ fn getAslrSlide() i64 {
     } else {
         return 0;
     }
+}
+
+/// Read the Mach-O __TEXT segment vmaddr from the binary file.
+/// Returns null if the file is not a valid Mach-O or __TEXT is not found.
+fn readMachOTextVmaddr(path: ?[*:0]const u8) ?u64 {
+    const p = path orelse return null;
+    const file = fopen(p, "rb") orelse return null;
+    defer _ = fclose(file);
+
+    // Read Mach-O header (64-bit: 32 bytes).
+    var header: [32]u8 = undefined;
+    if (fread(@ptrCast(&header), 32, 1, file) != 1) return null;
+
+    // Check magic: 0xFEEDFACF = MH_MAGIC_64.
+    const magic = std.mem.readInt(u32, header[0..4], .little);
+    if (magic != 0xFEEDFACF) return null;
+
+    const ncmds = std.mem.readInt(u32, header[16..20], .little);
+    const sizeofcmds = std.mem.readInt(u32, header[20..24], .little);
+
+    // Read all load commands.
+    var cmds_buf: [4096]u8 = undefined;
+    const cmds_len = @min(sizeofcmds, cmds_buf.len);
+    if (fread(@ptrCast(&cmds_buf), cmds_len, 1, file) != 1) return null;
+
+    // Parse load commands to find LC_SEGMENT_64 with __TEXT.
+    const LC_SEGMENT_64: u32 = 0x19;
+    var offset: usize = 0;
+    var i: u32 = 0;
+    while (i < ncmds and offset + 8 <= cmds_len) : (i += 1) {
+        const cmd = std.mem.readInt(u32, cmds_buf[offset..][0..4], .little);
+        const cmdsize = std.mem.readInt(u32, cmds_buf[offset..][4..8], .little);
+        if (cmd == LC_SEGMENT_64) {
+            // segment_command_64 layout:
+            //   cmd (4), cmdsize (4), segname (16), vmaddr (8), vmsize (8), ...
+            const segname = cmds_buf[offset + 8 ..][0..16];
+            if (std.mem.eql(u8, std.mem.trim(u8, segname, "\x00"), "__TEXT")) {
+                const vmaddr = std.mem.readInt(u64, cmds_buf[offset + 24 ..][0..8], .little);
+                return vmaddr;
+            }
+        }
+        if (cmdsize == 0) break;
+        offset += cmdsize;
+    }
+    return null;
 }
 
 /// Returns the executable path. Uses /proc/self/exe on Linux (reliable in
