@@ -66,7 +66,9 @@ pub fn run(opts: Options) OrchestratorError!RunResult {
     const self_path = self_path_buf[0..self_exe_len];
     const self_dir = std.fs.path.dirname(self_path) orelse ".";
 
-    const rt_path = try std.fs.path.join(allocator, &.{ self_dir, "zig-cov-rt.o" });
+    // The executable is in <prefix>/bin/zig-cov; the runtime object is in <prefix>/lib/zig-cov-rt.o.
+    const prefix_dir = std.fs.path.dirname(self_dir) orelse ".";
+    const rt_path = try std.fs.path.join(allocator, &.{ prefix_dir, "lib", "zig-cov-rt.o" });
     defer allocator.free(rt_path);
 
     // Build argv.
@@ -91,7 +93,9 @@ pub fn run(opts: Options) OrchestratorError!RunResult {
     defer child_env.deinit();
 
     // Run the build.
-    std.debug.print("zig-cov: running: {any}\n", .{argv.items});
+    std.debug.print("zig-cov: running:", .{});
+    for (argv.items) |arg| std.debug.print(" {s}", .{arg});
+    std.debug.print("\n", .{});
     const result = std.process.run(allocator, io, .{
         .argv = argv.items,
         .cwd = .{ .path = opts.project_dir },
