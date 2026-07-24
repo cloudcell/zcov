@@ -14,7 +14,12 @@ pub fn build(b: *std.Build) void {
 
     if (coverage) {
         unit_tests.sanitize_coverage_trace_pc_guard = true;
-        if (rt_path) |p| unit_tests.root_module.addObjectFile(.{ .cwd_relative = p });
+        if (rt_path) |p| {
+            // Use addObjectFile with the absolute path.
+            // In Zig 0.17+, LazyPath.cwd_relative is deprecated but still works.
+            const lazy_path = b.graph.cwdRelativePath(p);
+            unit_tests.root_module.addObjectFile(lazy_path);
+        }
     }
 
     const run_tests = b.addRunArtifact(unit_tests);
