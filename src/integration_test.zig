@@ -146,7 +146,10 @@ fn runSampleWithCoverage(
     while (it.next()) |entry| try env.put(entry.key_ptr.*, entry.value_ptr.*);
     try env.put("ZIG_COV_DIR", zcov_dir);
 
-    const rt_arg = try std.fmt.allocPrint(gpa, "-Dcoverage-rt={s}", .{build_options.rt_lib_path});
+    // rt_lib_path is already absolute (passed from build.zig).
+    const rt_abs_path = build_options.rt_lib_path;
+
+    const rt_arg = try std.fmt.allocPrint(gpa, "-Dcoverage-rt={s}", .{rt_abs_path});
     defer gpa.free(rt_arg);
 
     std.debug.print("running: {s} build test -Dcoverage=true {s}\n", .{ build_options.zig_exe, rt_arg });

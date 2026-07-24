@@ -94,26 +94,40 @@ pub const FunctionBoundary = struct {
     end_pc: u64,
 };
 
-/// Builder accumulates per-file line hit counts, then produces CoverageData.
+/// Builder accumulates per-file line hit counts and function hit counts, then produces CoverageData.
 pub const Builder = struct {
     allocator: std.mem.Allocator,
     /// file_path → (line → hit_count)
     file_map: std.StringHashMap(std.AutoHashMap(u32, u32)),
+    /// List of recorded function hits; used during build() to populate FunctionCoverage
+    function_hits: std.ArrayListUnmanaged(FunctionHitRecord),
+
+    const FunctionHitRecord = struct {
+        file_path: []const u8,
+        func_name: []const u8,
+        count: u32,
+    };
 
     pub fn init(allocator: std.mem.Allocator) Builder {
         return .{
             .allocator = allocator,
             .file_map = std.StringHashMap(std.AutoHashMap(u32, u32)).init(allocator),
+            .function_hits = .empty,
         };
     }
 
     pub fn deinit(self: *Builder) void {
         var it = self.file_map.iterator();
         while (it.next()) |entry| {
-            self.allocator.free(entry.key_ptr.*); // free the owned copy
+            self.allocator.free(entry.key_ptr.*);
             entry.value_ptr.deinit();
         }
         self.file_map.deinit();
+        for (self.function_hits.items) |rec| {
+            self.allocator.free(rec.file_path);
+            self.allocator.free(rec.func_name);
+        }
+        self.function_hits.deinit(self.allocator);
     }
 
     /// Record that `line` in `file_path` was hit.
@@ -129,6 +143,26 @@ pub const Builder = struct {
             count_gop.value_ptr.* = 0;
         }
         count_gop.value_ptr.* += 1;
+    }
+
+    /// Record that `function_name` was hit in `file_path`.
+    /// Builder copies both `file_path` and `function_name` on first insertion.
+    pub fn recordFunctionHit(self: *Builder, file_path: []const u8, function_name: []const u8) !void {
+        // Try to find existing record
+        for (self.function_hits.items) |*rec| {
+            if (std.mem.eql(u8, rec.file_path, file_path) and
+                std.mem.eql(u8, rec.func_name, function_name))
+            {
+                rec.count += 1;
+                return;
+            }
+        }
+        // Not found, create new record
+        try self.function_hits.append(self.allocator, .{
+            .file_path = try self.allocator.dupe(u8, file_path),
+            .func_name = try self.allocator.dupe(u8, function_name),
+            .count = 1,
+        });
     }
 
     /// Produce the final CoverageData. Caller owns the result (call deinit).
@@ -170,7 +204,8 @@ pub const Builder = struct {
             }
 
             // Look up function boundaries for this file by linear scan,
-            // convert FunctionBoundary → FunctionCoverage.
+            // convert FunctionBoundary → FunctionCoverage, and apply function hits
+            // from the builder's internal function_hits list.
             var func_cov: std.ArrayList(FunctionCoverage) = .empty;
             errdefer func_cov.deinit(self.allocator);
             if (func_boundaries) |bounds| {
@@ -179,11 +214,22 @@ pub const Builder = struct {
                         summary.functions_found += @intCast(entry.functions.len);
                         for (entry.functions) |fb| {
                             const fn_name = try self.allocator.dupe(u8, fb.name);
+                            // Look up hit count from function_hits list
+                            var hit_count: u32 = 0;
+                            for (self.function_hits.items) |rec| {
+                                if (std.mem.eql(u8, rec.file_path, path) and
+                                    std.mem.eql(u8, rec.func_name, fb.name))
+                                {
+                                    hit_count = rec.count;
+                                    break;
+                                }
+                            }
                             try func_cov.append(self.allocator, FunctionCoverage{
                                 .name = fn_name,
                                 .start_line = fb.start_line,
-                                .hit_count = 0,
+                                .hit_count = hit_count,
                             });
+                            if (hit_count > 0) summary.functions_hit += 1;
                         }
                         break;
                     }
@@ -297,6 +343,68 @@ test "Summary linePercent and functionPercent" {
     };
     try std.testing.expectApproxEqAbs(@as(f64, 50.0), s.linePercent(), 0.001);
     try std.testing.expectApproxEqAbs(@as(f64, 75.0), s.functionPercent(), 0.001);
+}
+
+test "Builder recordFunctionHit tracks function hits and build uses them" {
+    var bldr = Builder.init(std.testing.allocator);
+    defer bldr.deinit();
+
+    // Must record line hits first so file exists in file_map, then record function hits
+    try bldr.recordHit("foo.zig", 5); // creates the file entry
+    try bldr.recordFunctionHit("foo.zig", "myFunc");
+    try bldr.recordFunctionHit("foo.zig", "myFunc");
+    try bldr.recordFunctionHit("foo.zig", "myFunc");
+    try bldr.recordFunctionHit("foo.zig", "unusedFunc");
+
+    // Verify by building coverage - hit_count should be reflected
+    const funcs = &[_]FunctionBoundary{
+        .{ .name = "myFunc", .start_line = 1, .start_pc = 0x1000, .end_pc = 0x1050 },
+        .{ .name = "unusedFunc", .start_line = 10, .start_pc = 0x2000, .end_pc = 0x2050 },
+    };
+    const entries = [_]FunctionBoundaryMapEntry{
+        .{ .file_path = "foo.zig", .functions = funcs[0..] },
+    };
+
+    var cov = try bldr.build(&entries);
+    defer cov.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), cov.files.len);
+    try std.testing.expectEqual(@as(u32, 3), cov.files[0].functions[0].hit_count);
+    try std.testing.expectEqual(@as(u32, 1), cov.files[0].functions[1].hit_count);
+    try std.testing.expectEqual(@as(u32, 2), cov.summary.functions_found);
+    try std.testing.expectEqual(@as(u32, 2), cov.summary.functions_hit);
+}
+
+test "Builder build populates function coverage with hit counts" {
+    var bldr = Builder.init(std.testing.allocator);
+    defer bldr.deinit();
+
+    // Record line hits (required to create file entries)
+    try bldr.recordHit("foo.zig", 10);
+    try bldr.recordHit("foo.zig", 20);
+    try bldr.recordHit("foo.zig", 30);
+
+    // Record function hits
+    try bldr.recordFunctionHit("foo.zig", "main");
+    try bldr.recordFunctionHit("foo.zig", "helper");
+    try bldr.recordFunctionHit("foo.zig", "helper");
+    try bldr.recordFunctionHit("foo.zig", "helper");
+
+    const funcs = &[_]FunctionBoundary{
+        .{ .name = "main", .start_line = 10, .start_pc = 0x1050, .end_pc = 0x10a0 },
+        .{ .name = "helper", .start_line = 20, .start_pc = 0x10a0, .end_pc = 0x10f0 },
+    };
+    const entries = [_]FunctionBoundaryMapEntry{
+        .{ .file_path = "foo.zig", .functions = funcs[0..] },
+    };
+
+    var cov = try bldr.build(&entries);
+    defer cov.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), cov.files.len);
+    try std.testing.expectEqual(@as(usize, 2), cov.files[0].functions.len);
+    try std.testing.expectEqual(@as(u32, 2), cov.summary.functions_found);
+    try std.testing.expectEqual(@as(u32, 2), cov.summary.functions_hit);
 }
 
 test "Summary returns 100 percent when no items" {

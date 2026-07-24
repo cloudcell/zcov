@@ -212,6 +212,41 @@ fn cmdReport(gpa: std.mem.Allocator, io: std.Io, raw_args: []const []const u8) !
 // Core: build coverage model from .zcov files, generate report
 // ---------------------------------------------------------------------------
 
+/// Helper: binary search to find which function contains a PC.
+/// Functions must be sorted by start_pc (which extractFunctionBoundaries does).
+fn findFunctionByPC(pcs: []const resolver.FunctionBoundary, pc: u64) ?usize {
+    var lo: usize = 0;
+    var hi = pcs.len;
+    while (lo < hi) {
+        const mid = (lo + hi) / 2;
+        if (pcs[mid].end_pc <= pc) {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    if (lo > 0) {
+        const fb = pcs[lo - 1];
+        if (pc >= fb.start_pc) return lo - 1;
+    }
+    return null;
+}
+
+/// Track binary → .zcov files mapping.
+const BinZcov = struct {
+    path: []const u8,
+    slide: i64,
+    zcov_files: std.ArrayList([]const u8),
+    func_bounds: []const resolver.FunctionBoundary,
+
+    fn deinit(self: *BinZcov, gpa: std.mem.Allocator) void {
+        gpa.free(self.path);
+        for (self.zcov_files.items) |zf| gpa.free(zf);
+        self.zcov_files.deinit(gpa);
+        gpa.free(self.func_bounds);
+    }
+};
+
 fn generateReport(
     gpa: std.mem.Allocator,
     io: std.Io,
@@ -221,85 +256,77 @@ fn generateReport(
     var builder = coverage.Builder.init(gpa);
     defer builder.deinit();
 
-    // Collect (bin_path, slide) pairs from .zcov files.
-    var bin_slides: std.ArrayList(struct { path: []const u8, slide: i64 }) = .empty;
-    errdefer {
-        for (bin_slides.items) |bs| gpa.free(bs.path);
-        bin_slides.deinit(gpa);
+    // Track binary → .zcov files mapping.
+    var bin_map: std.StringHashMap(BinZcov) = .init(gpa);
+    defer {
+        var it = bin_map.iterator();
+        while (it.next()) |entry| {
+            entry.value_ptr.deinit(gpa);
+        }
+        bin_map.deinit();
     }
 
+    // First pass: collect .zcov files per binary.
     for (zcov_files) |zcov_path| {
-        processZcovFile(gpa, io, zcov_path, &builder) catch |err| {
-            std.debug.print("zig-cov: warning: failed to process '{s}': {}\n", .{ zcov_path, err });
+        var data = zcov_format.read(gpa, io, zcov_path) catch |err| {
+            std.debug.print("zig-cov: warning: failed to read '{s}': {}\n", .{ zcov_path, err });
             continue;
         };
-        // Record binary info for function boundary extraction later.
-        var data = zcov_format.read(gpa, io, zcov_path) catch continue;
         defer data.deinit();
-        // Deduplicate: only add if not already present.
-        var is_dup = false;
-        for (bin_slides.items) |bs| {
-            if (std.mem.eql(u8, bs.path, data.bin_path) and bs.slide == data.slide) {
-                is_dup = true;
-                break;
-            }
+
+        const key = try gpa.dupe(u8, data.bin_path);
+        const entry = try bin_map.getOrPut(key);
+        if (!entry.found_existing) {
+            entry.value_ptr.* = .{
+                .path = key,
+                .slide = data.slide,
+                .zcov_files = .empty,
+                .func_bounds = &.{},
+            };
         }
-        if (!is_dup) {
-            try bin_slides.append(gpa, .{ .path = try gpa.dupe(u8, data.bin_path), .slide = data.slide });
-        }
+        try entry.value_ptr.zcov_files.append(gpa, zcov_path);
     }
 
-    // Extract function boundaries for each unique binary.
-    var all_func_boundaries: std.ArrayList(coverage.FunctionBoundaryMapEntry) = .empty;
-    errdefer {
-        for (all_func_boundaries.items) |entry| {
-            gpa.free(entry.file_path);
-            gpa.free(entry.functions);
-        }
-        all_func_boundaries.deinit(gpa);
-    }
-
-    for (bin_slides.items) |bs| {
-        const func_bounds = resolver.extractFunctionBoundaries(
+    // Extract function boundaries for each binary.
+    var it = bin_map.iterator();
+    while (it.next()) |entry| {
+        const bin_entry = &entry.value_ptr.*;
+        bin_entry.func_bounds = resolver.extractFunctionBoundaries(
             gpa,
             io,
-            bs.path,
-            bs.slide,
+            bin_entry.path,
+            bin_entry.slide,
         ) catch |err| {
             std.debug.print(
                 "zig-cov: warning: function boundary extraction failed for '{s}': {}\n",
-                .{ bs.path, err },
+                .{ bin_entry.path, err },
             );
+            bin_entry.func_bounds = &.{};
             continue;
         };
-        if (func_bounds.len > 0) {
-            const entry = coverage.FunctionBoundaryMapEntry{
-                .file_path = try gpa.dupe(u8, bs.path),
-                .functions = try gpa.dupe(coverage.FunctionBoundary, func_bounds),
+    }
+
+    // Second pass: process .zcov files with function boundaries.
+    it = bin_map.iterator();
+    while (it.next()) |entry| {
+        const bin_entry = &entry.value_ptr.*;
+        if (bin_entry.func_bounds.len == 0) continue;
+
+        for (bin_entry.zcov_files.items) |zcov_path| {
+            processZcovFileWithFuncBounds(
+                gpa, io, zcov_path, bin_entry.path,
+                bin_entry.func_bounds, &builder,
+            ) catch |err| {
+                std.debug.print("zig-cov: warning: failed to process '{s}': {}\n", .{ zcov_path, err });
             };
-            gpa.free(func_bounds);
-            try all_func_boundaries.append(gpa, entry);
         }
     }
-    for (bin_slides.items) |bs| gpa.free(bs.path);
-    bin_slides.deinit(gpa);
 
-    const func_bounds_slice = if (all_func_boundaries.items.len > 0)
-        all_func_boundaries.items
-    else
-        &[_]coverage.FunctionBoundaryMapEntry{};
-
-    var cov_data = try builder.build(func_bounds_slice);
-    // Don't defer cov_data.deinit() here — we need to clean up all_func_boundaries first.
-
+    // Build coverage data (func_boundaries not needed since we already tracked function hits).
+    var cov_data = try builder.build(null);
     if (cov_data.files.len == 0) {
         std.debug.print("zig-cov: no coverage data could be resolved\n", .{});
         cov_data.deinit();
-        for (all_func_boundaries.items) |entry| {
-            gpa.free(entry.file_path);
-            gpa.free(entry.functions);
-        }
-        all_func_boundaries.deinit(gpa);
         std.process.exit(1);
     }
 
@@ -318,7 +345,7 @@ fn generateReport(
             try stdout.flush();
         },
         .lcov => {
-            passes = true; // fail_under only checks line coverage for summary
+            passes = true;
             if (opts.output) |out_path| {
                 var file = try std.Io.Dir.createFileAbsolute(io, out_path, .{});
                 defer file.close(io);
@@ -334,22 +361,17 @@ fn generateReport(
         },
     }
 
-    // Clean up in reverse order.
     cov_data.deinit();
-    for (all_func_boundaries.items) |entry| {
-        gpa.free(entry.file_path);
-        gpa.free(entry.functions);
-    }
-    all_func_boundaries.deinit(gpa);
-
     if (!passes) std.process.exit(1);
 }
 
-/// Process a single .zcov file: resolve PCs to file:line and record hits.
-fn processZcovFile(
+/// Process a single .zcov file: resolve PCs to file:line AND track function hits.
+fn processZcovFileWithFuncBounds(
     gpa: std.mem.Allocator,
     io: std.Io,
     zcov_path: []const u8,
+    bin_path: []const u8,
+    func_bounds: []const resolver.FunctionBoundary,
     builder: *coverage.Builder,
 ) !void {
     var data = try zcov_format.read(gpa, io, zcov_path);
@@ -362,7 +384,7 @@ fn processZcovFile(
     const locations = try resolver.resolveAddresses(
         gpa,
         io,
-        data.bin_path,
+        bin_path,
         data.slide,
         data.pcs,
     );
@@ -375,9 +397,16 @@ fn processZcovFile(
         gpa.free(locations);
     }
 
-    for (locations) |loc| {
+    // Track line hits and function hits in parallel.
+    for (data.pcs, locations) |pc, loc| {
         if (loc.line == 0) continue; // unknown location
         try builder.recordHit(loc.file, loc.line);
+
+        // Find function for this PC using binary search.
+        const func_idx = findFunctionByPC(func_bounds, pc);
+        if (func_idx) |idx| {
+            try builder.recordFunctionHit(loc.file, func_bounds[idx].name);
+        }
     }
 }
 

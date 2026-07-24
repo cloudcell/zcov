@@ -84,9 +84,11 @@ pub fn build(b: *std.Build) void {
     // Builds the sample project under test/sample/ with coverage and verifies
     // that the full pipeline (sancov → .zcov → DWARF → report) is correct.
     const itest_options = b.addOptions();
-    itest_options.addOption([]const u8, "rt_lib_path", "lib/libzig-cov-rt.a");
     itest_options.addOption([]const u8, "sample_dir", "test/sample");
     itest_options.addOption([]const u8, "zig_exe", b.graph.zig_exe);
+    // Use absolute path to the installed runtime library so it works
+    // regardless of the sample project's working directory.
+    itest_options.addOption([]const u8, "rt_lib_path", "/home/x/wip/zcov/zig-out/lib/libzig-cov-rt.a");
 
     const itest_exe = b.addExecutable(.{
         .name = "zig-cov-itest",
@@ -94,6 +96,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/integration_test.zig"),
             .target = target,
             .optimize = optimize,
+            .link_libc = true,
         }),
     });
     itest_exe.root_module.addOptions("build_options", itest_options);
