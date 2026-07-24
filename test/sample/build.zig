@@ -2,7 +2,7 @@ const std = @import("std");
 
 pub fn build(b: *std.Build) void {
     const coverage = b.option(bool, "coverage", "Enable zig-cov instrumentation") orelse false;
-    const rt_path = b.option([]const u8, "coverage-rt", "Absolute path to libzig-cov-rt.a") orelse null;
+    const rt_path = b.option([]const u8, "coverage-rt", "Path to libzig-cov-rt.a") orelse null;
 
     const unit_tests = b.addTest(.{
         .root_module = b.createModule(.{
@@ -15,10 +15,9 @@ pub fn build(b: *std.Build) void {
     if (coverage) {
         unit_tests.sanitize_coverage_trace_pc_guard = true;
         if (rt_path) |p| {
-            // Use addObjectFile with the absolute path.
-            // In Zig 0.17+, LazyPath.cwd_relative is deprecated but still works.
-            const lazy_path = b.graph.cwdRelativePath(p);
-            unit_tests.root_module.addObjectFile(lazy_path);
+            // Zig 0.17+: Use the deprecated cwd_relative variant directly.
+            // This ensures the path is resolved relative to the CWD at build time.
+            unit_tests.root_module.addObjectFile(.{ .cwd_relative = p });
         }
     }
 

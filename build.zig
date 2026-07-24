@@ -87,9 +87,8 @@ pub fn build(b: *std.Build) void {
     itest_options.addOption([]const u8, "sample_dir", "test/sample");
     itest_options.addOption([]const u8, "zig_exe", b.graph.zig_exe);
 
-    // Use a relative path that will work regardless of build directory.
-    // The integration test will resolve this relative to the workspace root.
-    itest_options.addOption([]const u8, "rt_lib_path", "zig-out/lib/libzig-cov-rt.a");
+    // Path relative to the sample project directory (test/sample/).
+    itest_options.addOption([]const u8, "rt_lib_path", "../zig-out/lib/libzig-cov-rt.a");
 
     const itest_exe = b.addExecutable(.{
         .name = "zig-cov-itest",
