@@ -145,7 +145,7 @@ fn benchCoverageModel(io: std.Io, gpa: std.mem.Allocator) !void {
 
     const t1 = nowNs(io);
 
-    var cov_data = try builder.build();
+    var cov_data = try builder.build(null);
     defer cov_data.deinit();
 
     const t2 = nowNs(io);
@@ -187,7 +187,7 @@ fn benchReportGeneration(io: std.Io, gpa: std.mem.Allocator) !void {
             if (li % 2 == 0) try builder.recordHit(paths[fi], @intCast(li + 1));
         }
     }
-    var cov_data = try builder.build();
+    var cov_data = try builder.build(null);
     defer cov_data.deinit();
 
     std.debug.print("bench 3 — report generation ({d} files × {d} lines)\n", .{ N_FILES, N_LINES });

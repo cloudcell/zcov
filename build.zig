@@ -86,9 +86,14 @@ pub fn build(b: *std.Build) void {
     const itest_options = b.addOptions();
     itest_options.addOption([]const u8, "sample_dir", "test/sample");
     itest_options.addOption([]const u8, "zig_exe", b.graph.zig_exe);
-    // Use absolute path to the installed runtime library so it works
-    // regardless of the sample project's working directory.
-    itest_options.addOption([]const u8, "rt_lib_path", "/home/x/wip/zcov/zig-out/lib/libzig-cov-rt.a");
+
+    // Compute absolute path to the installed runtime library at build time.
+    const cwd = b.graph.built_options.install_prefix orelse ".";
+    const rt_lib_abs_path = b.allocator.alloc(u8, cwd.len + 1 + "lib/libzig-cov-rt.a".len) catch unreachable;
+    @memcpy(rt_lib_abs_path[0..cwd.len], cwd);
+    rt_lib_abs_path[cwd.len] = '/';
+    @memcpy(rt_lib_abs_path[cwd.len + 1 ..], "lib/libzig-cov-rt.a");
+    itest_options.addOption([]const u8, "rt_lib_path", rt_lib_abs_path);
 
     const itest_exe = b.addExecutable(.{
         .name = "zig-cov-itest",
