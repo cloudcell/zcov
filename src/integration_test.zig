@@ -146,10 +146,22 @@ fn runSampleWithCoverage(
     while (it.next()) |entry| try env.put(entry.key_ptr.*, entry.value_ptr.*);
     try env.put("ZIG_COV_DIR", zcov_dir);
 
-    // rt_lib_path is already absolute (passed from build.zig).
-    const rt_abs_path = build_options.rt_lib_path;
+    // rt_lib_path is relative to the sample project directory (e.g., "../zig-out/lib/libzig-cov-rt.a").
+    // We need to resolve it to an absolute path so it works regardless of CWD.
+    const rt_rel_path = build_options.rt_lib_path;
+    // Get the current working directory (which is the workspace root).
+    var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const cwd_len = std.c.getcwd(&cwd_buf, cwd_buf.len) orelse 0;
+    if (cwd_len == 0) fail("failed to get current working directory");
+    const cwd_path: []const u8 = cwd_buf[0..cwd_len];
+    // Compute the absolute sample directory by joining cwd with sample_dir.
+    const sample_dir_abs = try std.fs.path.join(gpa, &.{ cwd_path, build_options.sample_dir });
+    defer gpa.free(sample_dir_abs);
+    // Join the absolute sample directory with rt_lib_path to get the full absolute path.
+    const full_rt_path = try std.fs.path.join(gpa, &.{ sample_dir_abs, rt_rel_path });
+    defer gpa.free(full_rt_path);
 
-    const rt_arg = try std.fmt.allocPrint(gpa, "-Dcoverage-rt={s}", .{rt_abs_path});
+    const rt_arg = try std.fmt.allocPrint(gpa, "-Dcoverage-rt={s}", .{full_rt_path});
     defer gpa.free(rt_arg);
 
     std.debug.print("running: {s} build test -Dcoverage=true {s}\n", .{ build_options.zig_exe, rt_arg });
