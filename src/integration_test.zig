@@ -151,10 +151,11 @@ fn runSampleWithCoverage(
     const rt_rel_path = build_options.rt_lib_path;
     // Get the current working directory (which is the workspace root).
     var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const cwd_ptr = std.c.getcwd(&cwd_buf, cwd_buf.len) orelse {
-        fail("failed to get current working directory");
-    };
-    const cwd_path: []const u8 = std.mem.span(cwd_ptr);
+    if (std.c.getcwd(&cwd_buf, cwd_buf.len) == null) fail("failed to get current working directory");
+    // Find null terminator to determine the string length.
+    var null_idx: usize = 0;
+    while (null_idx < cwd_buf.len and cwd_buf[null_idx] != 0) : (null_idx += 1) {}
+    const cwd_path: []const u8 = cwd_buf[0..null_idx];
     // Compute the absolute sample directory by joining cwd with sample_dir.
     const sample_dir_abs = try std.fs.path.join(gpa, &.{ cwd_path, build_options.sample_dir });
     defer gpa.free(sample_dir_abs);
