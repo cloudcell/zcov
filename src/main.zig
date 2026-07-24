@@ -241,8 +241,9 @@ const BinZcov = struct {
 
     fn deinit(self: *BinZcov, gpa: std.mem.Allocator) void {
         gpa.free(self.path);
-        for (self.zcov_files.items) |zf| gpa.free(zf);
+        // Don't free zcov_files items — they are owned by RunResult.
         self.zcov_files.deinit(gpa);
+        for (self.func_bounds) |fb| gpa.free(fb.name);
         gpa.free(self.func_bounds);
     }
 };

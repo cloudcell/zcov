@@ -142,13 +142,9 @@ fn writeCoverage() !void {
     // Determine the ASLR slide so the report generator can compute virtual addrs.
     const slide = getAslrSlide();
 
-    // Get an Io instance from the global single-threaded runtime.
-    const io = std.Io.Threaded.io(std.Io.Threaded.global_single_threaded);
-
-    // Get our own executable path.
-    var exe_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const exe_len = std.process.executablePath(io, &exe_buf) catch 0;
-    const bin_path: []const u8 = if (exe_len > 0) exe_buf[0..exe_len] else "<unknown>";
+    // Get our own executable path via dladdr (avoids std.Io.Threaded which
+    // may be null in test binary exit handlers).
+    const bin_path: []const u8 = getExePath();
 
     // Determine output directory from env var.
     const out_dir_cstr = std.c.getenv("ZIG_COV_DIR");
@@ -168,21 +164,89 @@ fn writeCoverage() !void {
 /// Returns the ASLR slide for the current process.
 /// The slide is subtracted from runtime PCs to get virtual addresses that
 /// match the addresses stored in DWARF debug information.
+///
+/// Uses dladdr() + ELF header reading instead of std.debug.getSelfDebugInfo()
+/// to avoid depending on Zig's Io runtime, which may be null in test binary
+/// exit handlers.
 fn getAslrSlide() i64 {
-    // Use a known address in our own code as the "runtime address".
-    // std.debug.SelfInfo can give us the corresponding virtual address.
-    const io = std.Io.Threaded.io(std.Io.Threaded.global_single_threaded);
-    const runtime_addr: usize = @intFromPtr(&__sanitizer_cov_trace_pc_guard_init);
-    const si = std.debug.getSelfDebugInfo() catch return 0;
-    const slide = si.getModuleSlide(io, runtime_addr) catch return 0;
-    return @intCast(slide);
+    var info: Dl_info = undefined;
+    if (dladdr(@ptrCast(&__sanitizer_cov_trace_pc_guard_init), &info) == 0) return 0;
+    const fbase = @intFromPtr(info.dli_fbase orelse return 0);
+
+    // Read the ELF header to determine if this is a PIE binary.
+    // For PIE (ET_DYN): slide = fbase (ELF base virtual address is 0).
+    // For non-PIE (ET_EXEC): slide = 0 (loaded at fixed address).
+    const exe_path = info.dli_fname orelse return @intCast(fbase);
+    const file = fopen(exe_path, "rb") orelse return @intCast(fbase);
+    defer _ = fclose(file);
+
+    // Read e_ident (16 bytes) + e_type (2 bytes).
+    var e_ident: [16]u8 = undefined;
+    if (fread(@ptrCast(&e_ident), 16, 1, file) != 1) return @intCast(fbase);
+    if (!std.mem.eql(u8, e_ident[0..4], "\x7fELF")) return @intCast(fbase);
+
+    var e_type: u16 = undefined;
+    if (fread(@ptrCast(&e_type), @sizeOf(u16), 1, file) != 1) return @intCast(fbase);
+
+    const ET_DYN: u16 = 3; // PIE / shared object
+    if (e_type == ET_DYN) {
+        return @intCast(fbase);
+    } else {
+        return 0;
+    }
 }
+
+/// Returns the executable path. Uses /proc/self/exe on Linux (reliable in
+/// atexit handlers), dladdr as fallback. The returned slice points to a
+/// static buffer.
+fn getExePath() []const u8 {
+    // On Linux, /proc/self/exe is a reliable symlink to the executable.
+    if (builtin.os.tag == .linux) {
+        const exe_path = readlinkProc("/proc/self/exe") catch null;
+        if (exe_path) |p| return p;
+    }
+
+    // Fallback: dladdr.
+    var info: Dl_info = undefined;
+    if (dladdr(@ptrCast(&__sanitizer_cov_trace_pc_guard_init), &info) != 0) {
+        if (info.dli_fname) |fname| {
+            return std.mem.span(fname);
+        }
+    }
+    return "<unknown>";
+}
+
+/// Reads a symlink using libc readlink (no Zig Io dependency).
+fn readlinkProc(path: [*:0]const u8) ![]const u8 {
+    const buf = &exe_path_buf;
+    const len = readlink(path, buf.ptr, buf.len);
+    if (len <= 0) return error.ReadlinkFailed;
+    return buf[0..@intCast(len)];
+}
+
+var exe_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+extern "c" fn readlink(path: [*:0]const u8, buf: [*]u8, bufsize: usize) c_long;
 
 // ---------------------------------------------------------------------------
 // Platform-specific helpers
 // ---------------------------------------------------------------------------
 
 extern fn atexit(callback: *const fn () callconv(.c) void) c_int;
+
+// libc file operations (also used by zcov_format.zig).
+extern "c" fn fopen(path: [*:0]const u8, mode: [*:0]const u8) ?*anyopaque;
+extern "c" fn fclose(stream: *anyopaque) c_int;
+extern "c" fn fwrite(ptr: *const anyopaque, size: usize, count: usize, stream: *anyopaque) usize;
+extern "c" fn fread(ptr: *anyopaque, size: usize, count: usize, stream: *anyopaque) usize;
+
+// dladdr for ASLR slide computation.
+const Dl_info = extern struct {
+    dli_fname: ?[*:0]const u8,
+    dli_fbase: ?*anyopaque,
+    dli_sname: ?[*:0]const u8,
+    dli_saddr: ?*anyopaque,
+};
+extern "c" fn dladdr(addr: *const anyopaque, info: *Dl_info) c_int;
 
 // ---------------------------------------------------------------------------
 // Tests

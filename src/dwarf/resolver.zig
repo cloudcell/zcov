@@ -63,6 +63,7 @@ pub fn extractFunctionBoundaries(
             "--syms",
             bin_path,
         },
+        .stdout = .pipe,
     }) catch return &.{};
     errdefer {
         child.kill(io);
@@ -95,31 +96,22 @@ pub fn extractFunctionBoundaries(
     var lines = std.mem.tokenizeScalar(u8, stdout.items, '\n');
     while (lines.next()) |line| {
         // Each line in the symbol table section looks like:
-        //   <symidx>: <address> <size> <type> <bind> <vis> <ndx> <name>
-        // Skip lines that don't start with a hex index.
+        //   <idx>: <address> <size> <type> <bind> <vis> <ndx> <name>
+        // Skip lines that don't start with a symbol index.
         const colon_pos = std.mem.indexOfScalar(u8, line, ':') orelse continue;
         const symidx_str = std.mem.trim(u8, line[0..colon_pos], " ");
-        // Verify it looks like a symbol index (hex number).
-        if (std.ascii.isHex(symidx_str[0]) == false) continue;
+        // Verify it looks like a number (symbol index).
+        if (symidx_str.len == 0 or !std.ascii.isDigit(symidx_str[0])) continue;
 
         const rest = line[colon_pos + 1 ..];
         var parts = std.mem.tokenizeAny(u8, rest, " \t");
 
-        var addresses = std.ArrayList([]const u8).initCapacity(allocator, 0) catch continue;
-        errdefer addresses.deinit(allocator);
-        var parsed: usize = 0;
-        while (parts.next()) |p| {
-            if (std.ascii.isHex(p[0]) and p.len <= 16) {
-                try addresses.append(allocator, p);
-                parsed += 1;
-                if (parsed >= 7) break;
-            }
-        }
-        if (parsed < 7) continue;
-
-        const addr_s = addresses.items[0];
-        const size_s = addresses.items[1];
-        const type_s = addresses.items[2];
+        // Field 0: address (hex)
+        const addr_s = parts.next() orelse continue;
+        // Field 1: size (hex)
+        const size_s = parts.next() orelse continue;
+        // Field 2: type (FUNC, OBJECT, etc.)
+        const type_s = parts.next() orelse continue;
 
         // Only care about FUNC symbols.
         if (!std.mem.eql(u8, type_s, "FUNC")) continue;
@@ -129,14 +121,17 @@ pub fn extractFunctionBoundaries(
 
         if (size == 0) continue;
 
-        // Get function name: it's the last token on the line.
-        const name = std.mem.trim(u8, std.mem.trimStart(u8, rest, " "), " ");
-        const last_space = std.mem.lastIndexOfScalar(u8, name, ' ') orelse continue;
-        const func_name = name[last_space + 1 ..];
+        // Skip fields 3-5 (bind, vis, ndx) to get to the name.
+        _ = parts.next() orelse continue; // bind
+        _ = parts.next() orelse continue; // vis
+        _ = parts.next() orelse continue; // ndx
+
+        // Field 6: function name (may be truncated by readelf with [...])
+        const func_name = parts.next() orelse continue;
         if (func_name.len == 0) continue;
 
-        // Skip common non-function symbols.
-        if (std.mem.eql(u8, func_name, "") or func_name[0] == '.') continue;
+        // Skip symbols starting with '.' (section labels, etc.)
+        if (func_name[0] == '.') continue;
 
         try functions.append(allocator, FunctionBoundary{
             .name = try allocator.dupe(u8, func_name),
